@@ -1,47 +1,6 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Control de PDF con Gestos</title>
-    <script src="https://cdn.jsdelivr.net/npm/handtrackjs/dist/handtrack.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
-
-    <style>
-        body { font-family: sans-serif; background: #333; color: white; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
-        #status { background: #ffcc00; color: black; padding: 5px 10px; border-radius: 5px; margin-bottom: 10px; font-weight: bold; }
-        
-        /* Contenedor principal */
-        .main-container { display: flex; gap: 20px; align-items: flex-start; }
-        
-        /* El lienzo del PDF */
-        #pdf-render { border: 2px solid #fff; box-shadow: 0 0 20px rgba(0,0,0,0.5); max-height: 80vh; }
-        
-        /* La cámara (la haremos pequeña para que no estorbe) */
-        .video-container { width: 200px; border: 2px solid #00ff00; position: relative; }
-        #video { width: 100%; height: auto; opacity: 0.8; }
-        #canvas { display: none; } /* Lienzo interno de detección, lo ocultamos */
-        
-        .controls { margin-top: 10px; }
-    </style>
-</head>
-<body>
-
-    <h2>Control por Gestos: Mueve tu mano a los lados</h2>
-    <div id="status">Cargando modelos... espera un momento.</div>
-
-    <div class="main-container">
-        <canvas id="pdf-render"></canvas>
-
-        <div class="video-container">
-            <video id="video"></video>
-            <div style="text-align: center; font-size: 12px; color: #0f0;">Cámara de Control</div>
-        </div>
-    </div>
-
-    <script>
+<script>
         // --- CONFIGURACIÓN DEL PDF ---
-        const url = 'demo.pdf'; // ASEGÚRATE DE QUE TU ARCHIVO SE LLAME ASÍ
+        const url = 'demo.pdf'; 
         let pdfDoc = null,
             pageNum = 1,
             pageIsRendering = false,
@@ -77,71 +36,96 @@
             renderPage(pageNum);
         }).catch(err => {
             document.getElementById('status').innerText = "Error: No encuentro 'demo.pdf'";
-            console.error(err);
         });
 
-        // Funciones de navegación
         const showPrevPage = () => { if (pageNum <= 1) return; pageNum--; renderPage(pageNum); };
         const showNextPage = () => { if (pageNum >= pdfDoc.numPages) return; pageNum++; renderPage(pageNum); };
 
-        // --- CONFIGURACIÓN DE LA CÁMARA E IA ---
+        // --- CONFIGURACIÓN DE IA MEJORADA ---
         const video = document.getElementById("video");
         const status = document.getElementById("status");
+        const videoContainer = document.querySelector('.video-container');
         let model = null;
-        let lastActionTime = 0; // Para evitar pasar 10 páginas de golpe
+        let lastActionTime = 0; 
 
-        // Configuración de detección
+        // 1. AJUSTE DE PRECISIÓN: Subimos el umbral a 0.85 (más estricto)
         const modelParams = {
-            flipHorizontal: true,   // Espejo para que sea natural
-            maxNumBoxes: 1,         // Solo queremos ver una mano
+            flipHorizontal: true,   
+            maxNumBoxes: 1,         
             iouThreshold: 0.5,
-            scoreThreshold: 0.7,
+            scoreThreshold: 0.85, 
         };
 
-        // Iniciar detección
+        // Dibujar las "Zonas" visualmente sobre el video para que el usuario sepa dónde tocar
+        function drawZones() {
+            // Creamos superposiciones visuales con CSS inyectado
+            const leftZone = document.createElement('div');
+            const rightZone = document.createElement('div');
+            
+            const styleBase = "position: absolute; top: 0; bottom: 0; opacity: 0.3; pointer-events: none;";
+            leftZone.style = `${styleBase} left: 0; width: 20%; background: red; border-right: 2px solid red;`;
+            rightZone.style = `${styleBase} right: 0; width: 20%; background: green; border-left: 2px solid green;`;
+            
+            videoContainer.appendChild(leftZone);
+            videoContainer.appendChild(rightZone);
+        }
+
         handTrack.load(modelParams).then(lmodel => {
             model = lmodel;
-            status.innerText = "Modelo cargado. Encendiendo cámara...";
+            status.innerText = "Cargando...";
             handTrack.startVideo(video).then(statusVideo => {
                 if (statusVideo) {
-                    status.innerText = "¡Sistema Listo! Mueve tu mano.";
+                    status.innerText = "Sistema Listo. Toca los bordes de color.";
+                    drawZones(); // Dibujamos las zonas
                     runDetection();
                 } else {
-                    status.innerText = "Por favor habilita la cámara.";
+                    status.innerText = "Activa la cámara.";
                 }
             });
         });
 
         function runDetection() {
             model.detect(video).then(predictions => {
-                // Si encontramos una mano
                 if (predictions.length > 0) {
-                    const mano = predictions[0].bbox; // [x, y, width, height]
-                    const x = mano[0]; // Posición horizontal
-                    
-                    // Lógica simple: Izquierda o Derecha del video pequeño
-                    // El video mide unos 200px de ancho aprox en el render interno
-                    
+                    // Obtenemos el centro de la mano, no solo la esquina
+                    const bbox = predictions[0].bbox; 
+                    const x = bbox[0]; 
+                    const w = bbox[2];
+                    const handCenter = x + (w / 2); // Punto central de la mano
+
+                    // Ancho del video (aprox 200px en el CSS)
+                    const videoWidth = video.videoWidth || 200; 
+
                     const currentTime = new Date().getTime();
-                    if (currentTime - lastActionTime > 1500) { // Esperar 1.5 segundos entre acciones
+                    
+                    // Lógica de espera (Cooldown) de 1.5 segundos
+                    if (currentTime - lastActionTime > 1500) { 
                         
-                        if (x < 50) { // Mano muy a la izquierda
-                            status.innerText = "DETECTADO: Anterior <<";
+                        // 2. LÓGICA DE ZONAS ESTRICTAS
+                        // Solo si la mano está en el 20% izquierdo
+                        if (handCenter < videoWidth * 0.2) { 
+                            status.innerText = "⏪ ANTERIOR";
+                            status.style.background = "red";
+                            status.style.color = "white";
                             showPrevPage();
                             lastActionTime = currentTime;
                         } 
-                        else if (x > 150) { // Mano muy a la derecha
-                            status.innerText = "DETECTADO: Siguiente >>";
+                        // Solo si la mano está en el 20% derecho (más allá del 80%)
+                        else if (handCenter > videoWidth * 0.8) { 
+                            status.innerText = "SIGUIENTE ⏩";
+                            status.style.background = "green";
+                            status.style.color = "white";
                             showNextPage();
                             lastActionTime = currentTime;
                         } else {
-                            status.innerText = "Mano en el centro...";
+                            // ZONA SEGURA (Centro)
+                            status.innerText = "Zona Neutral (Mueve al borde para activar)";
+                            status.style.background = "#ffcc00";
+                            status.style.color = "black";
                         }
                     }
                 }
-                requestAnimationFrame(runDetection); // Repetir el ciclo
+                requestAnimationFrame(runDetection); 
             });
         }
     </script>
-</body>
-</html>
